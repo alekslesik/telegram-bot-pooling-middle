@@ -26,6 +26,7 @@ const (
 	StateAdminCloseDay            = "admin_close_day"
 	StateAdminOpenDay             = "admin_open_day"
 	StateAdminDaySlots            = "admin_day_slots"
+	StateAdminAddAdmin            = "admin_add_admin"
 )
 
 type statePayload struct {
@@ -104,6 +105,8 @@ func (s *BookingService) HandleText(ctx context.Context, userID int64, text stri
 		return s.handleAdminOpenDay(ctx, userID, text)
 	case StateAdminDaySlots:
 		return s.handleAdminDaySlots(ctx, userID, text)
+	case StateAdminAddAdmin:
+		return s.handleAdminAddAdmin(ctx, userID, text)
 	default:
 		return false, "", nil
 	}
@@ -191,6 +194,20 @@ func (s *BookingService) StartAdminGenerateSlots(ctx context.Context, userID int
 	return dicts + "\n\nВведите параметры: `doctor_id|specialty_id|YYYY-MM-DD|09:00|18:00|30`.\nШаг задайте в минутах (например 30).", nil
 }
 
+func (s *BookingService) StartAdminAddAdmin(ctx context.Context, userID int64) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if err := s.saveState(ctx, userID, StateAdminAddAdmin, statePayload{}); err != nil {
+		return "", err
+	}
+	return "Введите Telegram user id (число), которого нужно добавить в админы.\nПример: 892122714", nil
+}
+
 func (s *BookingService) StartAdminCloseDay(ctx context.Context, userID int64) (string, error) {
 	ok, err := s.repo.IsAdmin(ctx, userID)
 	if err != nil {
@@ -264,6 +281,22 @@ func (s *BookingService) handleAdminAddDoctor(ctx context.Context, userID int64,
 	_ = s.repo.LogAdminAction(ctx, userID, "create_doctor", fmt.Sprintf("id=%d name=%s", item.ID, item.FullName))
 	_ = s.repo.DeleteConversationState(ctx, userID)
 	return true, fmt.Sprintf("Врач сохранен: ID %d, %s", item.ID, item.FullName), nil
+}
+
+func (s *BookingService) handleAdminAddAdmin(ctx context.Context, userID int64, text string) (bool, string, error) {
+	raw := strings.TrimSpace(text)
+	adminID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || adminID <= 0 {
+		return true, "Неверный формат. Введите Telegram user id числом.", nil
+	}
+
+	if err := s.repo.UpsertAdmin(ctx, adminID, true); err != nil {
+		return true, "", err
+	}
+
+	_ = s.repo.LogAdminAction(ctx, userID, "add_admin", fmt.Sprintf("telegram_user_id=%d", adminID))
+	_ = s.repo.DeleteConversationState(ctx, userID)
+	return true, fmt.Sprintf("Админ добавлен: %d", adminID), nil
 }
 
 func (s *BookingService) handleAdminLinkDoctorSpecialty(ctx context.Context, userID int64, text string) (bool, string, error) {

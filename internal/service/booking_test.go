@@ -129,3 +129,46 @@ func TestBookingService_RegisteredClientSkipsRegistration(t *testing.T) {
 		t.Fatalf("registered client should skip registration, got %q", start)
 	}
 }
+
+func TestBookingService_AdminAddAdmin(t *testing.T) {
+	repo := repository.NewMemoryRepository()
+	svc := NewBookingService(repo)
+	ctx := context.Background()
+
+	const adminID int64 = 1001
+	const newAdminID int64 = 892122714
+
+	// Non-admin cannot start add-admin flow.
+	if _, err := svc.StartAdminAddAdmin(ctx, newAdminID); err != nil {
+		t.Fatalf("start add-admin (non-admin) err: %v", err)
+	}
+
+	// Activate one admin in repository.
+	if err := repo.UpsertAdmin(ctx, adminID, true); err != nil {
+		t.Fatalf("upsert admin err: %v", err)
+	}
+
+	prompt, err := svc.StartAdminAddAdmin(ctx, adminID)
+	if err != nil {
+		t.Fatalf("start add-admin (admin) err: %v", err)
+	}
+	if !strings.Contains(prompt, "Telegram user id") {
+		t.Fatalf("unexpected prompt: %q", prompt)
+	}
+
+	handled, msg, err := svc.HandleText(ctx, adminID, "892122714")
+	if err != nil || !handled {
+		t.Fatalf("handle add-admin error: handled=%v err=%v msg=%q", handled, err, msg)
+	}
+	if !strings.Contains(msg, "Админ добавлен") {
+		t.Fatalf("unexpected add-admin success message: %q", msg)
+	}
+
+	ok, err := repo.IsAdmin(ctx, newAdminID)
+	if err != nil {
+		t.Fatalf("is admin check err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected new admin to be active")
+	}
+}

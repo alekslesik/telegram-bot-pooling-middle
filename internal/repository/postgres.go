@@ -453,6 +453,29 @@ func (r *PostgresRepository) IsAdmin(ctx context.Context, userID int64) (bool, e
 	return ok, err
 }
 
+func (r *PostgresRepository) UpsertAdmin(ctx context.Context, telegramUserID int64, isActive bool) error {
+	// is_active is stored in admins.is_active; we upsert the row and activate/deactivate.
+	if isActive {
+		_, err := r.db.ExecContext(ctx, `
+			INSERT INTO admins (telegram_user_id, is_active)
+			VALUES ($1, TRUE)
+			ON CONFLICT (telegram_user_id) DO UPDATE
+			SET is_active = TRUE,
+			    updated_at = NOW()
+		`, telegramUserID)
+		return err
+	}
+
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO admins (telegram_user_id, is_active)
+		VALUES ($1, FALSE)
+		ON CONFLICT (telegram_user_id) DO UPDATE
+		SET is_active = FALSE,
+		    updated_at = NOW()
+	`, telegramUserID)
+	return err
+}
+
 func (r *PostgresRepository) ListAllSpecialties(ctx context.Context) ([]Specialty, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, sort_order, is_active

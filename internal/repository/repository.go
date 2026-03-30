@@ -158,6 +158,9 @@ type BookingRepository interface {
 	OpenDoctorDay(ctx context.Context, doctorID, specialtyID int64, date time.Time) (int, error)
 	ListDoctorSlotsForDay(ctx context.Context, doctorID, specialtyID int64, date time.Time) ([]DoctorSlotDayView, error)
 
+	// Admin tools: add/activate admins.
+	UpsertAdmin(ctx context.Context, telegramUserID int64, isActive bool) error
+
 	GetConversationState(ctx context.Context, userID int64) (ConversationState, error)
 	SaveConversationState(ctx context.Context, state ConversationState) error
 	DeleteConversationState(ctx context.Context, userID int64) error
@@ -448,6 +451,17 @@ func (r *MemoryRepository) IsAdmin(_ context.Context, userID int64) (bool, error
 	defer r.mu.RUnlock()
 	_, ok := r.admins[userID]
 	return ok, nil
+}
+
+func (r *MemoryRepository) UpsertAdmin(_ context.Context, telegramUserID int64, isActive bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if isActive {
+		r.admins[telegramUserID] = struct{}{}
+		return nil
+	}
+	delete(r.admins, telegramUserID)
+	return nil
 }
 
 func (r *MemoryRepository) ListAllSpecialties(_ context.Context) ([]Specialty, error) {

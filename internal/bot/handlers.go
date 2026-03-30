@@ -785,6 +785,8 @@ func (h Handlers) handleAdminCallback(q *tgbotapi.CallbackQuery) {
 		text, err = h.Booking.StartAdminAddSpecialty(context.Background(), userID)
 	case "adddoc":
 		text, err = h.Booking.StartAdminAddDoctor(context.Background(), userID)
+	case "addadmin":
+		text, err = h.Booking.StartAdminAddAdmin(context.Background(), userID)
 	case "link":
 		text, err = h.Booking.StartAdminLinkDoctorSpecialty(context.Background(), userID)
 	case "slots":
@@ -823,6 +825,9 @@ func (h Handlers) adminKeyboard() *tgbotapi.InlineKeyboardMarkup {
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Добавить врача", "admin:adddoc"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Добавить админа", "admin:addadmin"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Привязать врач-специализация", "admin:link"),

@@ -179,3 +179,43 @@ func TestMemoryRepository_AdminDayTools_CloseOpenAndView(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryRepository_UpsertAdmin(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	const adminID int64 = 111
+	const anotherID int64 = 222
+
+	if err := repo.UpsertAdmin(ctx, adminID, true); err != nil {
+		t.Fatalf("upsert admin error: %v", err)
+	}
+
+	ok, err := repo.IsAdmin(ctx, adminID)
+	if err != nil {
+		t.Fatalf("is admin error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected admin to be active")
+	}
+
+	if err := repo.UpsertAdmin(ctx, adminID, false); err != nil {
+		t.Fatalf("deactivate admin error: %v", err)
+	}
+	ok, err = repo.IsAdmin(ctx, adminID)
+	if err != nil {
+		t.Fatalf("is admin error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected admin to be inactive")
+	}
+
+	// ensure other users were not accidentally modified
+	ok, err = repo.IsAdmin(ctx, anotherID)
+	if err != nil {
+		t.Fatalf("is admin error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected anotherID to be not admin by default")
+	}
+}
