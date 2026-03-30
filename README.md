@@ -44,6 +44,21 @@ The repository now includes an MVP booking wizard with persistent conversation s
 - Booking is persisted and slot is marked unavailable.
 - Conversation state is stored in repository (`conversation_states`) to survive bot restarts.
 
+### Admin Tools (RBAC)
+
+Администраторы (RBAC) могут управлять расписанием через бота. Доступ определяется таблицей `admins` в PostgreSQL.
+
+В Telegram это находится в инлайн-меню по кнопке `🛠️ Админ`.
+
+Новые админ-команды:
+
+- `Закрыть день`: делает слоты врача/специализации на дату недоступными (`doctor_slots.is_available = false`).
+  - Ввод: `doctor_id|specialty_id|YYYY-MM-DD` (пример: `2|5|2026-03-30`)
+- `Открыть день`: включает обратно доступность слотов на дату, кроме тех, где уже есть подтвержденные записи (`clinic_bookings.status = confirmed`).
+  - Ввод: `doctor_id|specialty_id|YYYY-MM-DD`
+- `Слоты на день`: показывает список слотов на дату с признаком `свободно/закрыто/занято` и ID.
+  - Ввод: `doctor_id|specialty_id|YYYY-MM-DD`
+
 ## Development Setup
 
 ### Requirements
