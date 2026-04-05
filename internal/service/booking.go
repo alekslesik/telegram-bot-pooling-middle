@@ -29,10 +29,12 @@ const (
 )
 
 type statePayload struct {
-	FullName  string `json:"full_name"`
-	Phone     string `json:"phone"`
-	ServiceID int64  `json:"service_id"`
-	SlotID    int64  `json:"slot_id"`
+	FullName      string `json:"full_name"`
+	Phone         string `json:"phone"`
+	ServiceID     int64  `json:"service_id"`
+	SlotID        int64  `json:"slot_id"`
+	AdminSpecMode string `json:"asm,omitempty"` // "auto" or "fixed" (inline add-specialty wizard)
+	AdminSpecSort int    `json:"ass,omitempty"`
 }
 
 var phoneCleaner = regexp.MustCompile(`[^0-9+]`)
@@ -128,6 +130,12 @@ func (s *BookingService) StartAdmin(ctx context.Context, userID int64) (bool, st
 }
 
 func (s *BookingService) StartAdminAddSpecialty(ctx context.Context, userID int64) (string, error) {
+	// Backward-compatible default: auto sort at end of catalog (same as pressing «Авто» in inline menu).
+	return s.PrepareAdminAddSpecialty(ctx, userID, true, 0)
+}
+
+// PrepareAdminAddSpecialty stores wizard state after the admin picks sort order via inline buttons.
+func (s *BookingService) PrepareAdminAddSpecialty(ctx context.Context, userID int64, auto bool, fixedSort int) (string, error) {
 	ok, err := s.repo.IsAdmin(ctx, userID)
 	if err != nil {
 		return "", err
@@ -135,10 +143,17 @@ func (s *BookingService) StartAdminAddSpecialty(ctx context.Context, userID int6
 	if !ok {
 		return "Нет доступа к админ-панели.", nil
 	}
-	if err := s.saveState(ctx, userID, StateAdminAddSpecialty, statePayload{}); err != nil {
+	p := statePayload{}
+	if auto {
+		p.AdminSpecMode = "auto"
+	} else {
+		p.AdminSpecMode = "fixed"
+		p.AdminSpecSort = fixedSort
+	}
+	if err := s.saveState(ctx, userID, StateAdminAddSpecialty, p); err != nil {
 		return "", err
 	}
-	return "Введите специализацию в формате: `Название|Порядок`.\nПример: Гастроэнтеролог|5", nil
+	return "Введите название специализации одним сообщением.", nil
 }
 
 func (s *BookingService) StartAdminAddDoctor(ctx context.Context, userID int64) (string, error) {
@@ -152,7 +167,7 @@ func (s *BookingService) StartAdminAddDoctor(ctx context.Context, userID int64) 
 	if err := s.saveState(ctx, userID, StateAdminAddDoctor, statePayload{}); err != nil {
 		return "", err
 	}
-	return "Введите ФИО врача.\nПример: Волницкий Иван Васильевич", nil
+	return "Ниже список врачей для ориентира (можно листать страницы). Отправьте ФИО нового врача одним сообщением.", nil
 }
 
 func (s *BookingService) StartAdminLinkDoctorSpecialty(ctx context.Context, userID int64) (string, error) {
@@ -234,16 +249,50 @@ func (s *BookingService) StartAdminDaySlots(ctx context.Context, userID int64) (
 }
 
 func (s *BookingService) handleAdminAddSpecialty(ctx context.Context, userID int64, text string) (bool, string, error) {
-	parts := strings.Split(strings.TrimSpace(text), "|")
-	if len(parts) != 2 {
-		return true, "Неверный формат. Используйте: Название|Порядок", nil
+	raw := strings.TrimSpace(text)
+	if raw == "" {
+		return true, "Введите название специализации.", nil
 	}
-	name := strings.TrimSpace(parts[0])
-	order, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+
+	if parts := strings.Split(raw, "|"); len(parts) == 2 {
+		name := strings.TrimSpace(parts[0])
+		order, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err == nil && name != "" {
+			item, err := s.repo.CreateSpecialty(ctx, name, order)
+			if err != nil {
+				return true, "", err
+			}
+			_ = s.repo.LogAdminAction(ctx, userID, "create_specialty", fmt.Sprintf("id=%d name=%s sort=%d", item.ID, item.Name, item.SortOrder))
+			_ = s.repo.DeleteConversationState(ctx, userID)
+			return true, fmt.Sprintf("Специализация сохранена: ID %d, %s", item.ID, item.Name), nil
+		}
+	}
+
+	_, payload, err := s.loadState(ctx, userID)
 	if err != nil {
-		return true, "Порядок должен быть числом.", nil
+		return false, "", err
 	}
-	item, err := s.repo.CreateSpecialty(ctx, name, order)
+	if payload.AdminSpecMode == "" {
+		return true, "Сначала нажмите «Добавить специализацию» и выберите порядок в меню, либо отправьте строку вида: Название|Порядок", nil
+	}
+	if len(raw) < 2 {
+		return true, "Введите название специализации (не короче 2 символов).", nil
+	}
+
+	var sort int
+	switch payload.AdminSpecMode {
+	case "auto":
+		sort, err = s.nextSpecialtySortOrder(ctx)
+		if err != nil {
+			return true, "", err
+		}
+	case "fixed":
+		sort = payload.AdminSpecSort
+	default:
+		return true, "Неверное состояние мастера. Откройте админ-меню снова.", nil
+	}
+
+	item, err := s.repo.CreateSpecialty(ctx, raw, sort)
 	if err != nil {
 		return true, "", err
 	}
@@ -388,10 +437,18 @@ func (s *BookingService) handleAdminDaySlots(ctx context.Context, userID int64, 
 	if err != nil {
 		return true, "Неверный формат. Используйте: doctor_id|specialty_id|YYYY-MM-DD", nil
 	}
-
-	slots, err := s.repo.ListDoctorSlotsForDay(ctx, doctorID, specialtyID, date)
+	msg, err := s.formatDoctorDaySlotsReport(ctx, userID, doctorID, specialtyID, date)
 	if err != nil {
 		return true, "", err
+	}
+	_ = s.repo.DeleteConversationState(ctx, userID)
+	return true, msg, nil
+}
+
+func (s *BookingService) formatDoctorDaySlotsReport(ctx context.Context, userID, doctorID, specialtyID int64, date time.Time) (string, error) {
+	slots, err := s.repo.ListDoctorSlotsForDay(ctx, doctorID, specialtyID, date)
+	if err != nil {
+		return "", err
 	}
 
 	var free, closed, busy int
@@ -400,26 +457,25 @@ func (s *BookingService) handleAdminDaySlots(ctx context.Context, userID int64, 
 
 	b.WriteString(fmt.Sprintf("Слоты на %s\nВрач ID: %d | Специализация ID: %d\n", dateStr, doctorID, specialtyID))
 
-	for _, s := range slots {
-		if s.IsBooked {
+	for _, sl := range slots {
+		if sl.IsBooked {
 			busy++
-			fmt.Fprintf(&b, "%s — занято (ID %d)\n", s.StartAt.Format("15:04"), s.ID)
+			fmt.Fprintf(&b, "%s — занято (ID %d)\n", sl.StartAt.Format("15:04"), sl.ID)
 			continue
 		}
-		if s.IsAvailable {
+		if sl.IsAvailable {
 			free++
-			fmt.Fprintf(&b, "%s — свободно (ID %d)\n", s.StartAt.Format("15:04"), s.ID)
+			fmt.Fprintf(&b, "%s — свободно (ID %d)\n", sl.StartAt.Format("15:04"), sl.ID)
 		} else {
 			closed++
-			fmt.Fprintf(&b, "%s — закрыто (ID %d)\n", s.StartAt.Format("15:04"), s.ID)
+			fmt.Fprintf(&b, "%s — закрыто (ID %d)\n", sl.StartAt.Format("15:04"), sl.ID)
 		}
 	}
 
 	b.WriteString(fmt.Sprintf("\nИтого: свободно=%d, закрыто=%d, занято=%d", free, closed, busy))
 
 	_ = s.repo.LogAdminAction(ctx, userID, "view_doctor_day_slots", fmt.Sprintf("doctor_id=%d specialty_id=%d date=%s slots=%d free=%d closed=%d busy=%d", doctorID, specialtyID, dateStr, len(slots), free, closed, busy))
-	_ = s.repo.DeleteConversationState(ctx, userID)
-	return true, strings.TrimSpace(b.String()), nil
+	return strings.TrimSpace(b.String()), nil
 }
 
 func (s *BookingService) adminDictionaries(ctx context.Context) (string, error) {
@@ -794,4 +850,248 @@ func (s *BookingService) SaveUploadedDocument(ctx context.Context, userID int64,
 		names = append(names, name)
 	}
 	return "Документ сохранен. Последние загрузки: " + strings.Join(names, ", "), nil
+}
+
+func adminDateFromOffsetDay(dayOffset int) time.Time {
+	now := time.Now().UTC()
+	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return base.AddDate(0, 0, dayOffset)
+}
+
+func (s *BookingService) nextSpecialtySortOrder(ctx context.Context) (int, error) {
+	all, err := s.repo.ListAllSpecialties(ctx)
+	if err != nil {
+		return 0, err
+	}
+	max := 0
+	for _, sp := range all {
+		if sp.SortOrder > max {
+			max = sp.SortOrder
+		}
+	}
+	return max + 1, nil
+}
+
+func (s *BookingService) doctorLinkedToSpecialty(ctx context.Context, doctorID, specialtyID int64) (bool, error) {
+	specs, err := s.repo.ListSpecialtiesForDoctor(ctx, doctorID)
+	if err != nil {
+		return false, err
+	}
+	for _, sp := range specs {
+		if sp.ID == specialtyID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ClearConversationState drops any wizard state (e.g. before starting an inline admin flow).
+func (s *BookingService) ClearConversationState(ctx context.Context, userID int64) error {
+	return s.repo.DeleteConversationState(ctx, userID)
+}
+
+// IsAdminUser reports whether the Telegram user is allowed to use admin tools.
+func (s *BookingService) IsAdminUser(ctx context.Context, userID int64) (bool, error) {
+	return s.repo.IsAdmin(ctx, userID)
+}
+
+func (s *BookingService) ListAllDoctorsPage(ctx context.Context, page, pageSize int) ([]repository.Doctor, int, error) {
+	all, err := s.repo.ListAllDoctors(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var items []repository.Doctor
+	for _, d := range all {
+		if d.IsActive {
+			items = append(items, d)
+		}
+	}
+	total := len(items)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return append([]repository.Doctor(nil), items[start:end]...), total, nil
+}
+
+func (s *BookingService) ListAllSpecialtiesPage(ctx context.Context, page, pageSize int) ([]repository.Specialty, int, error) {
+	all, err := s.repo.ListAllSpecialties(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var items []repository.Specialty
+	for _, sp := range all {
+		if sp.IsActive {
+			items = append(items, sp)
+		}
+	}
+	total := len(items)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return append([]repository.Specialty(nil), items[start:end]...), total, nil
+}
+
+func (s *BookingService) ListSpecialtiesForDoctorPage(ctx context.Context, doctorID int64, page, pageSize int) ([]repository.Specialty, int, error) {
+	all, err := s.repo.ListSpecialtiesForDoctor(ctx, doctorID)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(all)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return append([]repository.Specialty(nil), all[start:end]...), total, nil
+}
+
+// AdminLinkDoctorSpecialty links doctor to specialty after inline selection.
+func (s *BookingService) AdminLinkDoctorSpecialty(ctx context.Context, userID, doctorID, specialtyID int64) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if err := s.repo.LinkDoctorToSpecialty(ctx, doctorID, specialtyID); err != nil {
+		if err == repository.ErrNotFound {
+			return "Врач или специализация не найдены.", nil
+		}
+		return "", err
+	}
+	_ = s.repo.LogAdminAction(ctx, userID, "link_doctor_specialty", fmt.Sprintf("doctor_id=%d specialty_id=%d", doctorID, specialtyID))
+	return "Связка врача и специализации сохранена.", nil
+}
+
+// AdminGenerateSlotsPreset generates slots for a calendar day using a small preset table (UTC midnight-based day).
+func (s *BookingService) AdminGenerateSlotsPreset(ctx context.Context, userID, doctorID, specialtyID int64, dayOffset, preset int) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if dayOffset < 0 || dayOffset > 13 {
+		return "Выберите дату из предложенных кнопок.", nil
+	}
+	linked, err := s.doctorLinkedToSpecialty(ctx, doctorID, specialtyID)
+	if err != nil {
+		return "", err
+	}
+	if !linked {
+		return "У этого врача нет выбранной специализации. Сначала привяжите её.", nil
+	}
+	var startMin, endMin, step int
+	switch preset {
+	case 1:
+		startMin, endMin, step = 9*60, 18*60, 30
+	case 2:
+		startMin, endMin, step = 10*60, 16*60, 20
+	case 3:
+		startMin, endMin, step = 9*60, 13*60, 30
+	default:
+		return "Неверный шаблон интервала.", nil
+	}
+	d := adminDateFromOffsetDay(dayOffset)
+	inserted, err := s.repo.GenerateDoctorSlots(ctx, doctorID, specialtyID, d, startMin, endMin, step)
+	if err != nil {
+		if err == repository.ErrNotFound {
+			return "Врач или специализация не найдены.", nil
+		}
+		return "", err
+	}
+	_ = s.repo.LogAdminAction(ctx, userID, "generate_slots", fmt.Sprintf("doctor_id=%d specialty_id=%d date=%s inserted=%d preset=%d", doctorID, specialtyID, d.Format("2006-01-02"), inserted, preset))
+	return fmt.Sprintf("Готово. Добавлено слотов: %d (дата %s, UTC).", inserted, d.Format("02.01.2006")), nil
+}
+
+func (s *BookingService) AdminCloseDoctorDayOffset(ctx context.Context, userID, doctorID, specialtyID int64, dayOffset int) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if dayOffset < 0 || dayOffset > 13 {
+		return "Выберите дату из предложенных кнопок.", nil
+	}
+	linked, err := s.doctorLinkedToSpecialty(ctx, doctorID, specialtyID)
+	if err != nil {
+		return "", err
+	}
+	if !linked {
+		return "У этого врача нет выбранной специализации.", nil
+	}
+	d := adminDateFromOffsetDay(dayOffset)
+	updated, err := s.repo.CloseDoctorDay(ctx, doctorID, specialtyID, d)
+	if err != nil {
+		return "", err
+	}
+	_ = s.repo.LogAdminAction(ctx, userID, "close_doctor_day", fmt.Sprintf("doctor_id=%d specialty_id=%d date=%s updated=%d", doctorID, specialtyID, d.Format("2006-01-02"), updated))
+	return fmt.Sprintf("День закрыт. Изменено слотов: %d (%s, UTC).", updated, d.Format("02.01.2006")), nil
+}
+
+func (s *BookingService) AdminOpenDoctorDayOffset(ctx context.Context, userID, doctorID, specialtyID int64, dayOffset int) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if dayOffset < 0 || dayOffset > 13 {
+		return "Выберите дату из предложенных кнопок.", nil
+	}
+	linked, err := s.doctorLinkedToSpecialty(ctx, doctorID, specialtyID)
+	if err != nil {
+		return "", err
+	}
+	if !linked {
+		return "У этого врача нет выбранной специализации.", nil
+	}
+	d := adminDateFromOffsetDay(dayOffset)
+	updated, err := s.repo.OpenDoctorDay(ctx, doctorID, specialtyID, d)
+	if err != nil {
+		return "", err
+	}
+	_ = s.repo.LogAdminAction(ctx, userID, "open_doctor_day", fmt.Sprintf("doctor_id=%d specialty_id=%d date=%s updated=%d", doctorID, specialtyID, d.Format("2006-01-02"), updated))
+	return fmt.Sprintf("День открыт. Включено слотов: %d (%s, UTC).", updated, d.Format("02.01.2006")), nil
+}
+
+// AdminViewDoctorDaySlots returns a text report for the given doctor/specialty/day (UTC).
+func (s *BookingService) AdminViewDoctorDaySlots(ctx context.Context, userID, doctorID, specialtyID int64, dayOffset int) (string, error) {
+	ok, err := s.repo.IsAdmin(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "Нет доступа к админ-панели.", nil
+	}
+	if dayOffset < 0 || dayOffset > 13 {
+		return "Выберите дату из предложенных кнопок.", nil
+	}
+	linked, err := s.doctorLinkedToSpecialty(ctx, doctorID, specialtyID)
+	if err != nil {
+		return "", err
+	}
+	if !linked {
+		return "У этого врача нет выбранной специализации.", nil
+	}
+	d := adminDateFromOffsetDay(dayOffset)
+	return s.formatDoctorDaySlotsReport(ctx, userID, doctorID, specialtyID, d)
 }

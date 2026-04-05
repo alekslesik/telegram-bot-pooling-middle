@@ -493,6 +493,28 @@ func (r *PostgresRepository) ListAllDoctors(ctx context.Context) ([]Doctor, erro
 	return out, rows.Err()
 }
 
+func (r *PostgresRepository) ListSpecialtiesForDoctor(ctx context.Context, doctorID int64) ([]Specialty, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT s.id, s.name, s.sort_order, s.is_active
+		FROM specialties s
+		INNER JOIN doctor_specialties ds ON ds.specialty_id = s.id
+		WHERE ds.doctor_id = $1 AND s.is_active = TRUE
+		ORDER BY s.sort_order ASC, s.id ASC`, doctorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Specialty
+	for rows.Next() {
+		var s Specialty
+		if err := rows.Scan(&s.ID, &s.Name, &s.SortOrder, &s.IsActive); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (r *PostgresRepository) CreateSpecialty(ctx context.Context, name string, sortOrder int) (Specialty, error) {
 	name = strings.TrimSpace(name)
 	var s Specialty
