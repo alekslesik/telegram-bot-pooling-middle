@@ -179,3 +179,15 @@ func TestMemoryRepository_AdminDayTools_CloseOpenAndView(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryRepository_ListSpecialtiesForDoctor(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+	got, err := repo.ListSpecialtiesForDoctor(ctx, 1)
+	if err != nil {
+		t.Fatalf("list error: %v", err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("expected doctor 1 to have >=2 linked specialties, got %d", len(got))
+	}
+}

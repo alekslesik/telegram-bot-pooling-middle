@@ -147,6 +147,8 @@ type BookingRepository interface {
 	IsAdmin(ctx context.Context, userID int64) (bool, error)
 	ListAllSpecialties(ctx context.Context) ([]Specialty, error)
 	ListAllDoctors(ctx context.Context) ([]Doctor, error)
+	// ListSpecialtiesForDoctor returns active specialties linked to the doctor (catalog order).
+	ListSpecialtiesForDoctor(ctx context.Context, doctorID int64) ([]Specialty, error)
 	CreateSpecialty(ctx context.Context, name string, sortOrder int) (Specialty, error)
 	CreateDoctor(ctx context.Context, fullName string) (Doctor, error)
 	LinkDoctorToSpecialty(ctx context.Context, doctorID, specialtyID int64) error
@@ -474,6 +476,35 @@ func (r *MemoryRepository) ListAllDoctors(_ context.Context) ([]Doctor, error) {
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (r *MemoryRepository) ListSpecialtiesForDoctor(_ context.Context, doctorID int64) ([]Specialty, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	links, ok := r.doctorLinks[doctorID]
+	if !ok || len(links) == 0 {
+		return nil, nil
+	}
+	ids := make([]int64, 0, len(links))
+	for id := range links {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := make([]Specialty, 0, len(ids))
+	for _, id := range ids {
+		s, ok := r.specialties[id]
+		if !ok || !s.IsActive {
+			continue
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SortOrder == out[j].SortOrder {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].SortOrder < out[j].SortOrder
+	})
 	return out, nil
 }
 

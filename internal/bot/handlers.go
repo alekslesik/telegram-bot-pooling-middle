@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -392,6 +393,13 @@ func (h Handlers) HandleCallback(q *tgbotapi.CallbackQuery) {
 		return
 	}
 	data := strings.TrimSpace(q.Data)
+	if strings.HasPrefix(data, "adm:") {
+		if _, err := h.Bot.Request(tgbotapi.NewCallback(q.ID, "")); err != nil {
+			h.Logger.Error("failed to answer adm callback", "err", err)
+		}
+		h.handleAdmCallback(q)
+		return
+	}
 	if strings.HasPrefix(data, "admin:") {
 		if _, err := h.Bot.Request(tgbotapi.NewCallback(q.ID, "")); err != nil {
 			h.Logger.Error("failed to answer admin callback", "err", err)
@@ -768,51 +776,83 @@ func (h Handlers) handleAdminCallback(q *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// For our chat-based bot the Telegram user id is the requester.
 	userID := q.Message.Chat.ID
 	if q.From != nil {
 		userID = q.From.ID
 	}
 	chatID := q.Message.Chat.ID
-
-	var (
-		text string
-		err  error
-	)
+	ctx := context.Background()
 
 	switch parts[1] {
 	case "addspec":
-		text, err = h.Booking.StartAdminAddSpecialty(context.Background(), userID)
+		reply := tgbotapi.NewMessage(chatID, "Выберите позицию в каталоге или «Авто» (в конец по порядку).")
+		reply.ReplyMarkup = h.adminAddSpecOrderKeyboard()
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send add-spec keyboard", "err", err)
+		}
+		return
 	case "adddoc":
-		text, err = h.Booking.StartAdminAddDoctor(context.Background(), userID)
+		text, err := h.Booking.StartAdminAddDoctor(ctx, userID)
+		if err != nil {
+			h.Logger.Error("admin add doctor start failed", "err", err)
+			text = "Не удалось начать добавление врача."
+		} else {
+			text = h.adminDoctorRefPageText(ctx, 0) + "\n\n" + text
+		}
+		reply := tgbotapi.NewMessage(chatID, text)
+		reply.ReplyMarkup = h.adminDoctorsRefKeyboard(ctx, 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send add-doc wizard", "err", err)
+		}
+		return
 	case "link":
-		text, err = h.Booking.StartAdminLinkDoctorSpecialty(context.Background(), userID)
+		_ = h.Booking.ClearConversationState(ctx, userID)
+		reply := tgbotapi.NewMessage(chatID, "Привязка врача к специализации.\nШаг 1 — выберите врача:")
+		reply.ReplyMarkup = h.adminPickDoctorKeyboard(ctx, "adm:lk", 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send link wizard", "err", err)
+		}
+		return
 	case "slots":
-		text, err = h.Booking.StartAdminGenerateSlots(context.Background(), userID)
+		_ = h.Booking.ClearConversationState(ctx, userID)
+		reply := tgbotapi.NewMessage(chatID, "Сгенерировать слоты на день (календарь UTC).\nШаг 1 — выберите врача:")
+		reply.ReplyMarkup = h.adminPickDoctorKeyboard(ctx, "adm:sg", 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send slots wizard", "err", err)
+		}
+		return
 	case "closeday":
-		text, err = h.Booking.StartAdminCloseDay(context.Background(), userID)
+		_ = h.Booking.ClearConversationState(ctx, userID)
+		reply := tgbotapi.NewMessage(chatID, "Закрыть день (UTC).\nШаг 1 — выберите врача:")
+		reply.ReplyMarkup = h.adminPickDoctorKeyboard(ctx, "adm:cd", 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send close-day wizard", "err", err)
+		}
+		return
 	case "openday":
-		text, err = h.Booking.StartAdminOpenDay(context.Background(), userID)
+		_ = h.Booking.ClearConversationState(ctx, userID)
+		reply := tgbotapi.NewMessage(chatID, "Открыть день (UTC).\nШаг 1 — выберите врача:")
+		reply.ReplyMarkup = h.adminPickDoctorKeyboard(ctx, "adm:od", 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send open-day wizard", "err", err)
+		}
+		return
 	case "dayslots":
-		text, err = h.Booking.StartAdminDaySlots(context.Background(), userID)
+		_ = h.Booking.ClearConversationState(ctx, userID)
+		reply := tgbotapi.NewMessage(chatID, "Слоты на день (UTC).\nШаг 1 — выберите врача:")
+		reply.ReplyMarkup = h.adminPickDoctorKeyboard(ctx, "adm:ds", 0)
+		if _, err := h.Bot.Send(reply); err != nil {
+			h.Logger.Error("failed to send day-slots wizard", "err", err)
+		}
+		return
 	case "close":
-		text = "Админ-панель закрыта."
+		reply := tgbotapi.NewMessage(chatID, "Админ-панель закрыта.")
+		reply.ReplyMarkup = commandKeyboard()
+		if _, sendErr := h.Bot.Send(reply); sendErr != nil {
+			h.Logger.Error("failed to send admin close reply", "err", sendErr)
+		}
 	default:
 		return
-	}
-
-	if err != nil {
-		h.Logger.Error("admin action failed", "action", parts[1], "err", err)
-		text = "Не удалось выполнить админ-действие."
-	}
-
-	reply := tgbotapi.NewMessage(chatID, text)
-	reply.ReplyMarkup = commandKeyboard()
-	if parts[1] == "close" {
-		reply.ReplyMarkup = commandKeyboard()
-	}
-	if _, sendErr := h.Bot.Send(reply); sendErr != nil {
-		h.Logger.Error("failed to send admin action reply", "err", sendErr)
 	}
 }
 
@@ -844,4 +884,533 @@ func (h Handlers) adminKeyboard() *tgbotapi.InlineKeyboardMarkup {
 		),
 	)
 	return &inline
+}
+
+func adminInlinePageRow(prefix string, page, total, pageSize int) []tgbotapi.InlineKeyboardButton {
+	row := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("✖️", "adm:x"),
+	}
+	lastPage := 0
+	if total > 0 {
+		lastPage = (total - 1) / pageSize
+	}
+	if page > 0 {
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("%s:%d", prefix, page-1)))
+	}
+	if total > 0 && page < lastPage {
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("%s:%d", prefix, page+1)))
+	}
+	return row
+}
+
+func truncateButtonLabel(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes-1]) + "…"
+}
+
+func adminDayButtonLabel(dayOffset int) string {
+	switch dayOffset {
+	case 0:
+		return "Сегодня"
+	case 1:
+		return "Завтра"
+	default:
+		d := adminDateFromOffset(dayOffset)
+		return d.Format("02.01")
+	}
+}
+
+func adminDateFromOffset(dayOffset int) time.Time {
+	now := time.Now().UTC()
+	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return base.AddDate(0, 0, dayOffset)
+}
+
+func (h Handlers) adminAddSpecOrderKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Авто (в конец)", "adm:as:a"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("1", "adm:as:f:1"),
+			tgbotapi.NewInlineKeyboardButtonData("2", "adm:as:f:2"),
+			tgbotapi.NewInlineKeyboardButtonData("3", "adm:as:f:3"),
+			tgbotapi.NewInlineKeyboardButtonData("4", "adm:as:f:4"),
+			tgbotapi.NewInlineKeyboardButtonData("5", "adm:as:f:5"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("6", "adm:as:f:6"),
+			tgbotapi.NewInlineKeyboardButtonData("7", "adm:as:f:7"),
+			tgbotapi.NewInlineKeyboardButtonData("8", "adm:as:f:8"),
+			tgbotapi.NewInlineKeyboardButtonData("9", "adm:as:f:9"),
+			tgbotapi.NewInlineKeyboardButtonData("10", "adm:as:f:10"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✖️ Закрыть", "adm:x"),
+		),
+	)
+}
+
+func (h Handlers) adminDoctorRefPageText(ctx context.Context, page int) string {
+	if h.Booking == nil {
+		return ""
+	}
+	items, total, err := h.Booking.ListAllDoctorsPage(ctx, page, inlinePageSize)
+	if err != nil {
+		return "Не удалось загрузить список врачей."
+	}
+	lastPage := 0
+	if total > 0 {
+		lastPage = (total - 1) / inlinePageSize
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Справочник врачей (стр. %d из %d):\n", page+1, lastPage+1)
+	if len(items) == 0 {
+		b.WriteString("— пусто —")
+		return b.String()
+	}
+	for i, d := range items {
+		fmt.Fprintf(&b, "%d. %s\n", page*inlinePageSize+i+1, d.FullName)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (h Handlers) adminDoctorsRefKeyboard(ctx context.Context, page int) *tgbotapi.InlineKeyboardMarkup {
+	inline := tgbotapi.NewInlineKeyboardMarkup()
+	if h.Booking == nil {
+		return &inline
+	}
+	_, total, err := h.Booking.ListAllDoctorsPage(ctx, page, inlinePageSize)
+	if err != nil {
+		h.Logger.Error("admin doctors ref list failed", "err", err)
+		inline.InlineKeyboard = append(inline.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Закрыть", "adm:x"),
+		))
+		return &inline
+	}
+	prefix := "adm:dr:p"
+	inline.InlineKeyboard = append(inline.InlineKeyboard, adminInlinePageRow(prefix, page, total, inlinePageSize))
+	return &inline
+}
+
+func (h Handlers) adminPickDoctorKeyboard(ctx context.Context, base string, page int) *tgbotapi.InlineKeyboardMarkup {
+	inline := tgbotapi.NewInlineKeyboardMarkup()
+	if h.Booking == nil {
+		return &inline
+	}
+	items, total, err := h.Booking.ListAllDoctorsPage(ctx, page, inlinePageSize)
+	if err != nil {
+		h.Logger.Error("admin pick doctor list failed", "err", err)
+		return &inline
+	}
+	for _, d := range items {
+		label := truncateButtonLabel(d.FullName, 36)
+		inline.InlineKeyboard = append(inline.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("%s:dc:%d", base, d.ID)),
+		))
+	}
+	prefix := fmt.Sprintf("%s:dp", base)
+	inline.InlineKeyboard = append(inline.InlineKeyboard, adminInlinePageRow(prefix, page, total, inlinePageSize))
+	return &inline
+}
+
+func (h Handlers) adminPickSpecialtyLinkKeyboard(ctx context.Context, base string, doctorID int64, page int) *tgbotapi.InlineKeyboardMarkup {
+	inline := tgbotapi.NewInlineKeyboardMarkup()
+	if h.Booking == nil {
+		return &inline
+	}
+	items, total, err := h.Booking.ListAllSpecialtiesPage(ctx, page, inlinePageSize)
+	if err != nil {
+		h.Logger.Error("admin pick specialty (all) failed", "err", err)
+		return &inline
+	}
+	for _, s := range items {
+		label := truncateButtonLabel(s.Name, 36)
+		inline.InlineKeyboard = append(inline.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("%s:go:%d:%d", base, doctorID, s.ID)),
+		))
+	}
+	prefix := fmt.Sprintf("%s:sp:%d", base, doctorID)
+	inline.InlineKeyboard = append(inline.InlineKeyboard, adminInlinePageRow(prefix, page, total, inlinePageSize))
+	return &inline
+}
+
+func (h Handlers) adminPickSpecialtyLinkedKeyboard(ctx context.Context, base string, doctorID int64, page int) *tgbotapi.InlineKeyboardMarkup {
+	inline := tgbotapi.NewInlineKeyboardMarkup()
+	if h.Booking == nil {
+		return &inline
+	}
+	items, total, err := h.Booking.ListSpecialtiesForDoctorPage(ctx, doctorID, page, inlinePageSize)
+	if err != nil {
+		h.Logger.Error("admin pick specialty (linked) failed", "err", err)
+		return &inline
+	}
+	for _, s := range items {
+		label := truncateButtonLabel(s.Name, 36)
+		inline.InlineKeyboard = append(inline.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("%s:sc:%d:%d", base, doctorID, s.ID)),
+		))
+	}
+	prefix := fmt.Sprintf("%s:sp:%d", base, doctorID)
+	inline.InlineKeyboard = append(inline.InlineKeyboard, adminInlinePageRow(prefix, page, total, inlinePageSize))
+	return &inline
+}
+
+func (h Handlers) adminDayPickKeyboard(base string, doctorID, specialtyID int64) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	var row []tgbotapi.InlineKeyboardButton
+	for off := 0; off < 14; off++ {
+		label := adminDayButtonLabel(off)
+		cb := fmt.Sprintf("%s:dy:%d:%d:%d", base, doctorID, specialtyID, off)
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, cb))
+		if len(row) >= 3 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("К врачам", fmt.Sprintf("%s:dp:0", base)),
+		tgbotapi.NewInlineKeyboardButtonData("✖️", "adm:x"),
+	))
+	return tgbotapi.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (h Handlers) adminPresetKeyboard(doctorID, specialtyID int64, dayOffset int) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("09:00–18:00 · 30", fmt.Sprintf("adm:sg:pr:%d:%d:%d:1", doctorID, specialtyID, dayOffset)),
+			tgbotapi.NewInlineKeyboardButtonData("10:00–16:00 · 20", fmt.Sprintf("adm:sg:pr:%d:%d:%d:2", doctorID, specialtyID, dayOffset)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("09:00–13:00 · 30", fmt.Sprintf("adm:sg:pr:%d:%d:%d:3", doctorID, specialtyID, dayOffset)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Назад к датам", fmt.Sprintf("adm:sg:sc:%d:%d", doctorID, specialtyID)),
+			tgbotapi.NewInlineKeyboardButtonData("✖️", "adm:x"),
+		),
+	)
+}
+
+func (h Handlers) handleAdmCallback(q *tgbotapi.CallbackQuery) {
+	if q == nil || h.Booking == nil {
+		return
+	}
+	parts := strings.Split(strings.TrimSpace(q.Data), ":")
+	if len(parts) < 2 || parts[0] != "adm" {
+		return
+	}
+	userID := q.Message.Chat.ID
+	if q.From != nil {
+		userID = q.From.ID
+	}
+	chatID := q.Message.Chat.ID
+	ctx := context.Background()
+
+	ok, err := h.Booking.IsAdminUser(ctx, userID)
+	if err != nil {
+		h.Logger.Error("admin check failed", "err", err)
+		return
+	}
+	if !ok {
+		reply := tgbotapi.NewMessage(chatID, "Нет доступа к админ-панели.")
+		reply.ReplyMarkup = commandKeyboard()
+		_, _ = h.Bot.Send(reply)
+		return
+	}
+
+	send := func(text string, markup interface{}) {
+		reply := tgbotapi.NewMessage(chatID, text)
+		switch m := markup.(type) {
+		case tgbotapi.InlineKeyboardMarkup:
+			reply.ReplyMarkup = m
+		case *tgbotapi.InlineKeyboardMarkup:
+			reply.ReplyMarkup = m
+		case tgbotapi.ReplyKeyboardMarkup:
+			reply.ReplyMarkup = m
+		case nil:
+			reply.ReplyMarkup = commandKeyboard()
+		default:
+			reply.ReplyMarkup = commandKeyboard()
+		}
+		if reply.ReplyMarkup == nil {
+			reply.ReplyMarkup = commandKeyboard()
+		}
+		if _, sendErr := h.Bot.Send(reply); sendErr != nil {
+			h.Logger.Error("adm callback send failed", "err", sendErr)
+		}
+	}
+
+	switch parts[1] {
+	case "x":
+		send("Ок.", commandKeyboard())
+	case "dr":
+		if len(parts) == 4 && parts[2] == "p" {
+			page, okPage := parsePositiveInt(parts[3])
+			if !okPage {
+				return
+			}
+			body := h.adminDoctorRefPageText(ctx, page) + "\n\nОтправьте ФИО нового врача одним сообщением."
+			send(body, h.adminDoctorsRefKeyboard(ctx, page))
+		}
+	case "as":
+		if len(parts) == 3 && parts[2] == "a" {
+			text, err := h.Booking.PrepareAdminAddSpecialty(ctx, userID, true, 0)
+			if err != nil {
+				h.Logger.Error("prepare add spec auto", "err", err)
+				text = "Не удалось сохранить шаг мастера."
+			}
+			send(text, commandKeyboard())
+			return
+		}
+		if len(parts) == 4 && parts[2] == "f" {
+			sort, err := strconv.Atoi(parts[3])
+			if err != nil || sort < 0 {
+				send("Некорректный порядок.", h.adminAddSpecOrderKeyboard())
+				return
+			}
+			text, err := h.Booking.PrepareAdminAddSpecialty(ctx, userID, false, sort)
+			if err != nil {
+				h.Logger.Error("prepare add spec fixed", "err", err)
+				text = "Не удалось сохранить шаг мастера."
+			}
+			send(text, commandKeyboard())
+			return
+		}
+	case "lk":
+		if len(parts) < 3 {
+			return
+		}
+		switch parts[2] {
+		case "dp":
+			if len(parts) != 4 {
+				return
+			}
+			page, okPage := parsePositiveInt(parts[3])
+			if !okPage {
+				return
+			}
+			send("Шаг 1 — выберите врача:", h.adminPickDoctorKeyboard(ctx, "adm:lk", page))
+		case "dc":
+			if len(parts) != 4 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			if !okDoc {
+				return
+			}
+			send("Шаг 2 — выберите специализацию для привязки:", h.adminPickSpecialtyLinkKeyboard(ctx, "adm:lk", docID, 0))
+		case "sp":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			page, okPage := parsePositiveInt(parts[4])
+			if !okDoc || !okPage {
+				return
+			}
+			send("Шаг 2 — выберите специализацию для привязки:", h.adminPickSpecialtyLinkKeyboard(ctx, "adm:lk", docID, page))
+		case "go":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			if !okDoc || !okSpec {
+				return
+			}
+			text, err := h.Booking.AdminLinkDoctorSpecialty(ctx, userID, docID, specID)
+			if err != nil {
+				h.Logger.Error("admin link failed", "err", err)
+				text = "Не удалось сохранить связку."
+			}
+			send(text, commandKeyboard())
+		}
+	case "sg":
+		if len(parts) < 3 {
+			return
+		}
+		switch parts[2] {
+		case "dp":
+			if len(parts) != 4 {
+				return
+			}
+			page, okPage := parsePositiveInt(parts[3])
+			if !okPage {
+				return
+			}
+			send("Шаг 1 — выберите врача:", h.adminPickDoctorKeyboard(ctx, "adm:sg", page))
+		case "dc":
+			if len(parts) != 4 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			if !okDoc {
+				return
+			}
+			_, total, err := h.Booking.ListSpecialtiesForDoctorPage(ctx, docID, 0, inlinePageSize)
+			if err != nil {
+				h.Logger.Error("list specs for doctor", "err", err)
+				send("Не удалось загрузить специализации.", commandKeyboard())
+				return
+			}
+			if total == 0 {
+				inline := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("К списку врачей", "adm:sg:dp:0"),
+						tgbotapi.NewInlineKeyboardButtonData("✖️", "adm:x"),
+					),
+				)
+				send("У этого врача нет привязанных специализаций. Сначала привяжите направление.", inline)
+				return
+			}
+			send("Шаг 2 — выберите специализацию:", h.adminPickSpecialtyLinkedKeyboard(ctx, "adm:sg", docID, 0))
+		case "sp":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			page, okPage := parsePositiveInt(parts[4])
+			if !okDoc || !okPage {
+				return
+			}
+			send("Шаг 2 — выберите специализацию:", h.adminPickSpecialtyLinkedKeyboard(ctx, "adm:sg", docID, page))
+		case "sc":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			if !okDoc || !okSpec {
+				return
+			}
+			send("Шаг 3 — выберите дату (UTC):", h.adminDayPickKeyboard("adm:sg", docID, specID))
+		case "dy":
+			if len(parts) != 6 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			off, okOff := parsePositiveInt(parts[5])
+			if !okDoc || !okSpec || !okOff {
+				return
+			}
+			send("Шаг 4 — шаблон расписания:", h.adminPresetKeyboard(docID, specID, off))
+		case "pr":
+			if len(parts) != 7 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			off, okOff := parsePositiveInt(parts[5])
+			preset, err := strconv.Atoi(parts[6])
+			if !okDoc || !okSpec || !okOff || err != nil || preset < 1 {
+				return
+			}
+			text, err := h.Booking.AdminGenerateSlotsPreset(ctx, userID, docID, specID, off, preset)
+			if err != nil {
+				h.Logger.Error("generate slots preset", "err", err)
+				text = "Не удалось сгенерировать слоты."
+			}
+			send(text, commandKeyboard())
+		}
+	default:
+		if len(parts[1]) != 2 {
+			return
+		}
+		flow := parts[1]
+		if flow != "cd" && flow != "od" && flow != "ds" {
+			return
+		}
+		base := "adm:" + flow
+		if len(parts) < 3 {
+			return
+		}
+		switch parts[2] {
+		case "dp":
+			if len(parts) != 4 {
+				return
+			}
+			page, okPage := parsePositiveInt(parts[3])
+			if !okPage {
+				return
+			}
+			send("Шаг 1 — выберите врача:", h.adminPickDoctorKeyboard(ctx, base, page))
+		case "dc":
+			if len(parts) != 4 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			if !okDoc {
+				return
+			}
+			_, total, err := h.Booking.ListSpecialtiesForDoctorPage(ctx, docID, 0, inlinePageSize)
+			if err != nil {
+				h.Logger.Error("list specs for doctor", "err", err)
+				send("Не удалось загрузить специализации.", commandKeyboard())
+				return
+			}
+			if total == 0 {
+				inline := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("К списку врачей", fmt.Sprintf("%s:dp:0", base)),
+						tgbotapi.NewInlineKeyboardButtonData("✖️", "adm:x"),
+					),
+				)
+				send("У этого врача нет привязанных специализаций.", inline)
+				return
+			}
+			send("Шаг 2 — выберите специализацию:", h.adminPickSpecialtyLinkedKeyboard(ctx, base, docID, 0))
+		case "sp":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			page, okPage := parsePositiveInt(parts[4])
+			if !okDoc || !okPage {
+				return
+			}
+			send("Шаг 2 — выберите специализацию:", h.adminPickSpecialtyLinkedKeyboard(ctx, base, docID, page))
+		case "sc":
+			if len(parts) != 5 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			if !okDoc || !okSpec {
+				return
+			}
+			send("Шаг 3 — выберите дату (UTC):", h.adminDayPickKeyboard(base, docID, specID))
+		case "dy":
+			if len(parts) != 6 {
+				return
+			}
+			docID, okDoc := parseInt64(parts[3])
+			specID, okSpec := parseInt64(parts[4])
+			off, okOff := parsePositiveInt(parts[5])
+			if !okDoc || !okSpec || !okOff {
+				return
+			}
+			var text string
+			var err error
+			switch flow {
+			case "cd":
+				text, err = h.Booking.AdminCloseDoctorDayOffset(ctx, userID, docID, specID, off)
+			case "od":
+				text, err = h.Booking.AdminOpenDoctorDayOffset(ctx, userID, docID, specID, off)
+			case "ds":
+				text, err = h.Booking.AdminViewDoctorDaySlots(ctx, userID, docID, specID, off)
+			}
+			if err != nil {
+				h.Logger.Error("admin day action failed", "flow", flow, "err", err)
+				text = "Не удалось выполнить действие."
+			}
+			send(text, commandKeyboard())
+		}
+	}
 }
