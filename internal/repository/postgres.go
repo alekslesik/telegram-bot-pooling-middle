@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -450,7 +452,34 @@ func (r *PostgresRepository) IsAdmin(ctx context.Context, userID int64) (bool, e
 			SELECT 1 FROM admins
 			WHERE telegram_user_id = $1 AND is_active = TRUE
 		)`, userID).Scan(&ok)
-	return ok, err
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		return true, nil
+	}
+	// VPS bootstrap fallback: allow admins from env even if DB table is empty.
+	return isEnvAdmin(userID), nil
+}
+
+func isEnvAdmin(userID int64) bool {
+	raw := strings.TrimSpace(os.Getenv("ADMIN_TELEGRAM_IDS"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("ADMIN_IDS"))
+	}
+	if raw == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+	})
+	for _, p := range parts {
+		v, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err == nil && v == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PostgresRepository) ListAllSpecialties(ctx context.Context) ([]Specialty, error) {

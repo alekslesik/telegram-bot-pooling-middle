@@ -68,6 +68,7 @@ Main variables:
 - `POSTGRES_DB`, `POSTGRES_USER` - database name and user for Compose (see [.env.example](.env.example)).
 - **Postgres password (Compose)** - put a single line in `secrets/postgres_password` (not in git). On deploy, GitHub Actions writes this file from the `VPS_POSTGRES_PASSWORD` secret.
 - `DB_DSN` - optional full DSN for local/non-Compose runs. If unset, the bot builds a DSN from `DB_PASSWORD_FILE` (set automatically in Compose) plus `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`. If neither `DB_DSN` nor `DB_PASSWORD_FILE` is available, the bot uses in-memory storage.
+- `ADMIN_TELEGRAM_IDS` - optional comma/space separated admin Telegram IDs (fallback access if `admins` table has no rows yet). Example: `123456789,987654321`.
 - `APP_ENV`, `LOG_LEVEL`, `LOG_FORMAT` - runtime options.
 
 ### Database migration
@@ -78,6 +79,20 @@ Apply SQL migrations from [migrations](migrations) before running with PostgreSQ
 
 ```bash
 make run
+```
+
+Manual scripts (without `make`):
+
+- Bash (Linux/macOS/Git Bash):
+
+```bash
+./scripts/run-manual.sh
+```
+
+- Windows CMD:
+
+```bat
+scripts\run-manual.cmd
 ```
 
 ### Run tests
